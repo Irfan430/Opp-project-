@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:6.0
+    container_name: cybersec_mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: cybersecurity_platform
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - cybersec_network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: cybersec_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - cybersec_network
+
+  # Backend API Service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cybersec_backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      MONGODB_URI: mongodb://admin:password123@mongodb:27017/cybersecurity_platform?authSource=admin
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ML_SERVICE_URL: http://ml-service:8001
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
+      ENCRYPTION_KEY: your-32-character-encryption-key-here
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - scan_results:/app/scan_results
+      - reports:/app/reports
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - cybersec_network
+
+  # ML Service (FastAPI)
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: cybersec_ml_service
+    restart: unless-stopped
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./ml-service:/app
+      - ml_models:/app/models
+    networks:
+      - cybersec_network
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: http://localhost:3001/api
+        REACT_APP_SOCKET_URL: http://localhost:3001
+    container_name: cybersec_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - cybersec_network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: cybersec_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - cybersec_network
+
+  # Scan Worker Service
+  scan-worker:
+    build:
+      context: ./shared
+      dockerfile: Dockerfile.scanner
+    container_name: cybersec_scan_worker
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MONGODB_URI: mongodb://admin:password123@mongodb:27017/cybersecurity_platform?authSource=admin
+    volumes:
+      - scan_results:/app/results
+      - ./shared:/app
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - cybersec_network
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+volumes:
+  mongodb_data:
+  redis_data:
+  scan_results:
+  reports:
+  ml_models:
+
+networks:
+  cybersec_network:
+    driver: bridge
